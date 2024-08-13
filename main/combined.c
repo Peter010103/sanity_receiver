@@ -63,6 +63,8 @@ struct swmc_packet {
   uint16_t payload_count;        // Number of agents
 };
 
+static char rx_buffer[UDP_BUF_SIZE];
+
 esp_err_t setup_uart(void) {
   const uart_config_t uart_config = {.baud_rate = 100000,
                                      .data_bits = UART_DATA_8_BITS,
@@ -142,8 +144,8 @@ void construct_sbus(uint16_t *channels, uint8_t *sbus_packet) {
   }
 
   // Flags: channels 17, 18, frame lost, failsafe activated
-  sbus_packet[23] =
-      0x00; // Set as needed, e.g., packet[23] |= 0x01 for channel 17
+  // Set as needed, e.g., packet[23] |= 0x01 for channel 17
+  sbus_packet[23] = 0x00;
 
   // Footer
   sbus_packet[24] = 0x00;
@@ -160,14 +162,14 @@ void send_sbus(void *pvParameters) {
 }
 
 uint64_t ntohll(uint64_t val) {
-    return ((val & 0xFF00000000000000ULL) >> 56) |
-           ((val & 0x00FF000000000000ULL) >> 40) |
-           ((val & 0x0000FF0000000000ULL) >> 24) |
-           ((val & 0x000000FF00000000ULL) >> 8)  |
-           ((val & 0x00000000FF000000ULL) << 8)  |
-           ((val & 0x0000000000FF0000ULL) << 24) |
-           ((val & 0x000000000000FF00ULL) << 40) |
-           ((val & 0x00000000000000FFULL) << 56);
+  return ((val & 0xFF00000000000000ULL) >> 56) |
+         ((val & 0x00FF000000000000ULL) >> 40) |
+         ((val & 0x0000FF0000000000ULL) >> 24) |
+         ((val & 0x000000FF00000000ULL) >> 8)  |
+         ((val & 0x00000000FF000000ULL) << 8)  |
+         ((val & 0x0000000000FF0000ULL) << 24) |
+         ((val & 0x000000000000FF00ULL) << 40) |
+         ((val & 0x00000000000000FFULL) << 56);
 }
 
 struct swmc_packet *decode_packet(const uint32_t stream_id, const char *buffer,
@@ -194,43 +196,53 @@ struct swmc_packet *decode_packet(const uint32_t stream_id, const char *buffer,
 
   // Decode routing header, including endianess correction
   swmc_packet->routing_header.destination_host = buffer[0];
-  swmc_packet->routing_header.destination_process = ntohs(*(uint16_t*)&buffer[1]);
+  swmc_packet->routing_header.destination_process =
+      ntohs(*(uint16_t *)&buffer[1]);
   swmc_packet->routing_header.source_host = buffer[3];
-  swmc_packet->routing_header.source_process = ntohs(*(uint16_t*)&buffer[4]);
+  swmc_packet->routing_header.source_process = ntohs(*(uint16_t *)&buffer[4]);
   memcpy(&swmc_packet->routing_header.timestamp, &buffer[6], sizeof(uint64_t));
-  swmc_packet->routing_header.timestamp = ntohll(swmc_packet->routing_header.timestamp);
+  swmc_packet->routing_header.timestamp =
+      ntohll(swmc_packet->routing_header.timestamp);
   swmc_packet->routing_header.meta = buffer[14];
   swmc_packet->routing_header.next_header = buffer[15];
 
   // Decode stream header, including endianess correction
   swmc_packet->stream_header.source_host = buffer[16];
-  swmc_packet->stream_header.source_process = ntohs(*(uint16_t*)&buffer[17]);
-  swmc_packet->stream_header.encoded_stream_sequence = ntohl(*(uint32_t*)&buffer[19]);
+  swmc_packet->stream_header.source_process = ntohs(*(uint16_t *)&buffer[17]);
+  swmc_packet->stream_header.encoded_stream_sequence =
+      ntohl(*(uint32_t *)&buffer[19]);
   swmc_packet->stream_header.next_header = buffer[23];
 
   // Only attempt to decode the payload if the stream id matches
   if (stream_id != swmc_packet->stream_header.encoded_stream_sequence) {
+    DEBUG_LOGI("SWMC", "Stream ID does not match %lu",
+               swmc_packet->stream_header.encoded_stream_sequence);
     free(swmc_packet);
     return NULL;
   }
 
   // TODO: Fast decode
   uint16_t payload_count = (buffer_len - 24) / 9;
+  DEBUG_LOGI("SWMC", "Obtained %d payload packets", payload_count);
   swmc_packet->payload_count = payload_count;
 
   swmc_packet->payload_array = calloc(payload_count, sizeof(struct payload));
   if (!swmc_packet->payload_array) {
-      free(swmc_packet);
-      return NULL;
+    free(swmc_packet);
+    return NULL;
   }
 
   // Decode all payload, including endianess correction
   uint16_t buf_pos = 24;
   for (uint16_t i = 0; i < payload_count; i++) {
-    swmc_packet->payload_array[i].roll = ntohs(*(uint16_t*)&buffer[buf_pos + 0]);
-    swmc_packet->payload_array[i].pitch = ntohs(*(uint16_t*)&buffer[buf_pos + 2]);
-    swmc_packet->payload_array[i].yaw = ntohs(*(uint16_t*)&buffer[buf_pos + 4]);
-    swmc_packet->payload_array[i].thrust = ntohs(*(uint16_t*)&buffer[buf_pos + 6]);
+    swmc_packet->payload_array[i].roll =
+        ntohs(*(uint16_t *)&buffer[buf_pos + 0]);
+    swmc_packet->payload_array[i].pitch =
+        ntohs(*(uint16_t *)&buffer[buf_pos + 2]);
+    swmc_packet->payload_array[i].yaw =
+        ntohs(*(uint16_t *)&buffer[buf_pos + 4]);
+    swmc_packet->payload_array[i].thrust =
+        ntohs(*(uint16_t *)&buffer[buf_pos + 6]);
     swmc_packet->payload_array[i].flags = buffer[buf_pos + 8];
 
     // Move the buffer position by the size of the payload struct (9 bytes)
@@ -271,13 +283,17 @@ void udp_sender_task(void *pvParameters) {
   client_addr.sin_family = AF_INET;
   client_addr.sin_port = htons(UDP_CLIENT_TARGET_PORT);
 
-  size_t payload_size = sizeof(MY_ID) + (packet_counter * sizeof(uint16_t));
+  size_t payload_size = sizeof(MY_ID) + (NUM_STAT_PACKETS * sizeof(uint16_t));
   uint8_t *payload = (uint8_t *)malloc(payload_size);
 
   memcpy(payload, &MY_ID, sizeof(MY_ID));
-  memcpy(payload + sizeof(MY_ID), time_intervals, packet_counter * sizeof(uint16_t));
+  memcpy(payload + sizeof(MY_ID), time_intervals,
+         NUM_STAT_PACKETS * sizeof(uint16_t));
 
-  for (int i=0; i < 5; i++) {
+  DEBUG_LOGI("TELEM", "Size of time_intervals: %d",
+             sizeof(time_intervals) / sizeof(uint16_t));
+
+  for (int i = 0; i < 5; i++) {
     int sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_IP);
     if (sock < 0) {
       DEBUG_LOGE(TAG, "Unable to create socket: errno %d", errno);
@@ -299,15 +315,11 @@ void udp_sender_task(void *pvParameters) {
     close(sock);
   }
 
-  // free(time_intervals);
-  // free(payload);
   vTaskDelete(NULL);
 }
 #endif
 
-
 void udp_listener_task(void *pvParameters) {
-  char rx_buffer[UDP_BUF_SIZE];
   struct sockaddr_in server_addr;
 
   int sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_IP);
@@ -321,12 +333,13 @@ void udp_listener_task(void *pvParameters) {
   server_addr.sin_family = AF_INET;
   server_addr.sin_port = htons(UDP_PORT);
 
+  // TODO: Fix behaviour when packet given on wrong broadcast address
   if (inet_pton(AF_INET, "10.0.0.255", &server_addr.sin_addr) <= 0) {
-        DEBUG_LOGE("UDP", "Invalid address: errno %d", errno);
-        close(sock);
-        vTaskDelete(NULL);
-        return;
-    }
+    DEBUG_LOGE("UDP", "Invalid address: errno %d", errno);
+    close(sock);
+    vTaskDelete(NULL);
+    return;
+  }
 
   int err = bind(sock, (struct sockaddr *)&server_addr, sizeof(server_addr));
   if (err < 0) {
@@ -338,30 +351,36 @@ void udp_listener_task(void *pvParameters) {
   DEBUG_LOGI("UDP", "UDP server task started, listening for packets...");
 
 #if DEBUG_UDP_ENABLED
-  time_intervals = (uint16_t *)malloc(NUM_STAT_PACKETS * sizeof(uint16_t));
-  if (time_intervals == NULL) {
-        fprintf(stderr, "Memory allocation for time_intervals failed\n");
-        exit(1);
-  }
+  uint16_t packet_counter = 0;
   TickType_t current_ticks;
   TickType_t last_ticks = xTaskGetTickCount();
-  
-  ESP_LOGI("UDP Testing", "%lu", portTICK_PERIOD_MS);
+
+  DEBUG_LOGI("UDP Testing", "%lu", portTICK_PERIOD_MS);
 #endif
 
   while (1) {
     struct sockaddr_in source_addr;
     socklen_t socklen = sizeof(source_addr);
+    memset(rx_buffer, 0, sizeof(rx_buffer));
+
     int rx_buffer_len = recvfrom(sock, rx_buffer, sizeof(rx_buffer) - 1, 0,
                                  (struct sockaddr *)&source_addr, &socklen);
 
 #if DEBUG_UDP_ENABLED
     current_ticks = xTaskGetTickCount();
-    time_intervals[packet_counter] = (current_ticks - last_ticks) * portTICK_PERIOD_MS;
+    uint16_t dt = (current_ticks - last_ticks) * portTICK_PERIOD_MS;
+    DEBUG_LOGI("UDP Testing", "%hu", dt);
+
+    time_intervals[packet_counter] = dt;
     last_ticks = current_ticks;
 
     if (packet_counter < NUM_STAT_PACKETS) {
       packet_counter++;
+
+      if (packet_counter % 16 == 0) {
+        ESP_LOGI("UDP Testing", "Received %d packets", packet_counter);
+      }
+
     } else {
       break;
     }
@@ -374,6 +393,7 @@ void udp_listener_task(void *pvParameters) {
 
     struct swmc_packet *swmc_packet =
         decode_packet(SWMC_STREAM_ID, rx_buffer, rx_buffer_len);
+
     if (!swmc_packet) {
       DEBUG_LOGE("UDP", "Failed to decode packet");
       return;
@@ -392,15 +412,17 @@ void udp_listener_task(void *pvParameters) {
     channels[3] = my_payload->yaw;
     decode_flags(my_payload->flags);
   }
-  
+
   if (sock != -1) {
     DEBUG_LOGE("UDP", "Shutting down socket and restarting...");
     close(sock);
   }
- 
+
+#if DEBUG_UDP_ENABLED
   vTaskDelay(pdMS_TO_TICKS(400 * MY_ID));
-  ESP_LOGI("TELEM", "Creating UDP sender");
+  DEBUG_LOGI("TELEM", "Creating UDP sender");
   xTaskCreate(udp_sender_task, "udp_sender", 4096, NULL, 1, NULL);
+#endif
 
   vTaskDelete(NULL);
 }
@@ -448,6 +470,8 @@ void wifi_init_sta(void) {
   DEBUG_LOGI("WIFI", "Wi-Fi configuration set to STA mode with SSID: %s",
              WIFI_SSID);
 
+  ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
+
   ESP_ERROR_CHECK(esp_wifi_start());
   DEBUG_LOGI("WIFI", "Wi-Fi STA started");
 }
@@ -457,6 +481,7 @@ void app_main(void) {
   wifi_init_sta();
 
   ESP_ERROR_CHECK(setup_uart());
-  xTaskCreate(udp_listener_task, "udp_listener", 4096, NULL, 2, NULL);
-  xTaskCreate(send_sbus, "sbus_sender", 1024, NULL, 2, NULL);
+  xTaskCreate(udp_listener_task, "udp_listener", 8192, NULL, 2, NULL);
+  xTaskCreate(send_sbus, "sbus_sender", 2048, NULL, 2, NULL);
+
 }

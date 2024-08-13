@@ -17,7 +17,7 @@
 #define WIFI_PASS "**r0b0t**"
 
 #define UDP_PORT 10240
-#define UDP_BUF_SIZE 1024
+#define UDP_BUF_SIZE 2048
 
 #define SWMC_STREAM_ID 777
 #define SWMC_FAST_DECODE (0)
