@@ -192,64 +192,64 @@ struct swmc_packet *decode_packet(const uint32_t stream_id, const char *buffer,
     return NULL;
   }
 
-  struct swmc_packet *swmc_packet = calloc(1, sizeof(struct swmc_packet));
+  struct swmc_packet *packet = malloc(1*sizeof(struct swmc_packet));
 
   // Decode routing header, including endianess correction
-  swmc_packet->routing_header.destination_host = buffer[0];
-  swmc_packet->routing_header.destination_process =
+  packet->routing_header.destination_host = buffer[0];
+  packet->routing_header.destination_process =
       ntohs(*(uint16_t *)&buffer[1]);
-  swmc_packet->routing_header.source_host = buffer[3];
-  swmc_packet->routing_header.source_process = ntohs(*(uint16_t *)&buffer[4]);
-  memcpy(&swmc_packet->routing_header.timestamp, &buffer[6], sizeof(uint64_t));
-  swmc_packet->routing_header.timestamp =
-      ntohll(swmc_packet->routing_header.timestamp);
-  swmc_packet->routing_header.meta = buffer[14];
-  swmc_packet->routing_header.next_header = buffer[15];
+  packet->routing_header.source_host = buffer[3];
+  packet->routing_header.source_process = ntohs(*(uint16_t *)&buffer[4]);
+  memcpy(&packet->routing_header.timestamp, &buffer[6], sizeof(uint64_t));
+  packet->routing_header.timestamp =
+      ntohll(packet->routing_header.timestamp);
+  packet->routing_header.meta = buffer[14];
+  packet->routing_header.next_header = buffer[15];
 
   // Decode stream header, including endianess correction
-  swmc_packet->stream_header.source_host = buffer[16];
-  swmc_packet->stream_header.source_process = ntohs(*(uint16_t *)&buffer[17]);
-  swmc_packet->stream_header.encoded_stream_sequence =
+  packet->stream_header.source_host = buffer[16];
+  packet->stream_header.source_process = ntohs(*(uint16_t *)&buffer[17]);
+  packet->stream_header.encoded_stream_sequence =
       ntohl(*(uint32_t *)&buffer[19]);
-  swmc_packet->stream_header.next_header = buffer[23];
+  packet->stream_header.next_header = buffer[23];
 
   // Only attempt to decode the payload if the stream id matches
-  if (stream_id != swmc_packet->stream_header.encoded_stream_sequence) {
+  if (stream_id != packet->stream_header.encoded_stream_sequence) {
     DEBUG_LOGI("SWMC", "Stream ID does not match %lu",
-               swmc_packet->stream_header.encoded_stream_sequence);
-    free(swmc_packet);
+               packet->stream_header.encoded_stream_sequence);
+    free(packet);
     return NULL;
   }
 
   // TODO: Fast decode
   uint16_t payload_count = (buffer_len - 24) / 9;
   DEBUG_LOGI("SWMC", "Obtained %d payload packets", payload_count);
-  swmc_packet->payload_count = payload_count;
+  packet->payload_count = payload_count;
 
-  swmc_packet->payload_array = calloc(payload_count, sizeof(struct payload));
-  if (!swmc_packet->payload_array) {
-    free(swmc_packet);
+  packet->payload_array = malloc(payload_count*sizeof(struct payload));
+  if (!packet->payload_array) {
+    free(packet);
     return NULL;
   }
 
   // Decode all payload, including endianess correction
   uint16_t buf_pos = 24;
   for (uint16_t i = 0; i < payload_count; i++) {
-    swmc_packet->payload_array[i].roll =
+    packet->payload_array[i].roll =
         ntohs(*(uint16_t *)&buffer[buf_pos + 0]);
-    swmc_packet->payload_array[i].pitch =
+    packet->payload_array[i].pitch =
         ntohs(*(uint16_t *)&buffer[buf_pos + 2]);
-    swmc_packet->payload_array[i].yaw =
+    packet->payload_array[i].yaw =
         ntohs(*(uint16_t *)&buffer[buf_pos + 4]);
-    swmc_packet->payload_array[i].thrust =
+    packet->payload_array[i].thrust =
         ntohs(*(uint16_t *)&buffer[buf_pos + 6]);
-    swmc_packet->payload_array[i].flags = buffer[buf_pos + 8];
+    packet->payload_array[i].flags = buffer[buf_pos + 8];
 
     // Move the buffer position by the size of the payload struct (9 bytes)
     buf_pos += 9;
   }
 
-  return swmc_packet;
+  return packet;
 };
 
 void decode_flags(const uint8_t aux_flags) {
@@ -391,26 +391,30 @@ void udp_listener_task(void *pvParameters) {
       break;
     }
 
-    struct swmc_packet *swmc_packet =
+    struct swmc_packet *packet =
         decode_packet(SWMC_STREAM_ID, rx_buffer, rx_buffer_len);
 
-    if (!swmc_packet) {
+    if (!packet) {
       DEBUG_LOGE("UDP", "Failed to decode packet");
       return;
     }
 
-    if (MY_ID > swmc_packet->payload_count - 1) {
+    if (MY_ID > packet->payload_count - 1) {
       DEBUG_LOGE("UDP", "MY_ID (%d) is out of bounds. Payload count: %d", MY_ID,
-                 swmc_packet->payload_count);
+                 packet->payload_count);
       return;
     }
 
-    struct payload *my_payload = &((swmc_packet->payload_array)[MY_ID]);
+    struct payload *my_payload = &((packet->payload_array)[MY_ID]);
     channels[0] = my_payload->roll;
     channels[1] = my_payload->pitch;
     channels[2] = my_payload->thrust;
     channels[3] = my_payload->yaw;
     decode_flags(my_payload->flags);
+
+    // release memory, preferably in reverse order of alloc
+    if(my_payload) free(packet->payload_array);
+    if(packet) free(packet);
   }
 
   if (sock != -1) {
