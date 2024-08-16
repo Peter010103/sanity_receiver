@@ -444,23 +444,63 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
 }
 
 void wifi_init_sta(void) {
-  ESP_ERROR_CHECK(esp_netif_init());
-  ESP_ERROR_CHECK(esp_event_loop_create_default());
-  esp_netif_create_default_wifi_sta();
+  char *TAG = "WiFi Initialization";
+
+  esp_err_t ret;
+
+  DEBUG_LOGI(TAG, "Initializing ESP-NETIF...");
+  ret = esp_netif_init();
+  if (ret != ESP_OK) {
+    ESP_LOGE(TAG, "esp_netif_init failed: %s", esp_err_to_name(ret));
+    return;
+  }
+
+  DEBUG_LOGI(TAG, "Creating default event loop...");
+  ret = esp_event_loop_create_default();
+  if (ret != ESP_OK) {
+    ESP_LOGE(TAG, "esp_event_loop_create_default failed: %s",
+             esp_err_to_name(ret));
+    return;
+  }
+
+  DEBUG_LOGI(TAG, "Creating default Wi-Fi STA netif...");
+  esp_netif_t *wifi_sta = esp_netif_create_default_wifi_sta();
+  if (wifi_sta == NULL) {
+    ESP_LOGE(TAG, "esp_netif_create_default_wifi_sta failed");
+    return;
+  }
 
   wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-  ESP_ERROR_CHECK(esp_wifi_init(&cfg));
-  DEBUG_LOGI("WIFI", "Wi-Fi initialization complete");
+  DEBUG_LOGI(TAG, "Initializing Wi-Fi...");
+  ret = esp_wifi_init(&cfg);
+  if (ret != ESP_OK) {
+    DEBUG_LOGE(TAG, "esp_wifi_init failed: %s", esp_err_to_name(ret));
+    return;
+  }
+  DEBUG_LOGI(TAG, "Wi-Fi initialization complete");
 
   esp_event_handler_instance_t instance_any_id;
   esp_event_handler_instance_t instance_got_ip;
 
-  ESP_ERROR_CHECK(esp_event_handler_instance_register(
-      WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL,
-      &instance_any_id));
-  ESP_ERROR_CHECK(esp_event_handler_instance_register(
-      IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL,
-      &instance_got_ip));
+  DEBUG_LOGI(TAG, "Registering Wi-Fi event handlers...");
+  ret = esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
+                                            &wifi_event_handler, NULL,
+                                            &instance_any_id);
+  if (ret != ESP_OK) {
+    DEBUG_LOGE(TAG,
+               "esp_event_handler_instance_register for WIFI_EVENT failed: %s",
+               esp_err_to_name(ret));
+    return;
+  }
+  ret = esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
+                                            &wifi_event_handler, NULL,
+                                            &instance_got_ip);
+  if (ret != ESP_OK) {
+    DEBUG_LOGE(TAG,
+               "esp_event_handler_instance_register for IP_EVENT failed: %s",
+               esp_err_to_name(ret));
+    return;
+  }
 
   wifi_config_t wifi_config = {
       .sta =
@@ -469,15 +509,51 @@ void wifi_init_sta(void) {
               .password = WIFI_PASS,
           },
   };
-  ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-  ESP_ERROR_CHECK(esp_wifi_set_config(ESP_IF_WIFI_STA, &wifi_config));
-  DEBUG_LOGI("WIFI", "Wi-Fi configuration set to STA mode with SSID: %s",
+  DEBUG_LOGI(TAG, "Setting Wi-Fi mode to STA...");
+  ret = esp_wifi_set_mode(WIFI_MODE_STA);
+  if (ret != ESP_OK) {
+    DEBUG_LOGE(TAG, "esp_wifi_set_mode failed: %s", esp_err_to_name(ret));
+    return;
+  }
+  DEBUG_LOGI(TAG, "Setting Wi-Fi configuration...");
+  ret = esp_wifi_set_config(ESP_IF_WIFI_STA, &wifi_config);
+  if (ret != ESP_OK) {
+    DEBUG_LOGE(TAG, "esp_wifi_set_config failed: %s", esp_err_to_name(ret));
+    return;
+  }
+  DEBUG_LOGI(TAG, "Wi-Fi configuration set to STA mode with SSID: %s",
              WIFI_SSID);
 
-  ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
+  esp_wifi_set_ps(WIFI_PS_NONE);
 
-  ESP_ERROR_CHECK(esp_wifi_start());
-  DEBUG_LOGI("WIFI", "Wi-Fi STA started");
+  // Stop DHCP if running
+  DEBUG_LOGI(TAG, "Stopping DHCP client...");
+  ret = esp_netif_dhcpc_stop(wifi_sta);
+  if (ret != ESP_OK) {
+    DEBUG_LOGE(TAG, "esp_netif_dhcpc_stop failed: %s", esp_err_to_name(ret));
+    return;
+  }
+
+  // Configure static IP settings
+  esp_netif_ip_info_t ip_info;
+  ip_info.ip.addr = ipaddr_addr(STATIC_IP_ADDR);
+  ip_info.gw.addr = ipaddr_addr(STATIC_GATEWAY);
+  ip_info.netmask.addr = ipaddr_addr(STATIC_NETMASK);
+
+  DEBUG_LOGI(TAG, "Setting static IP configuration...");
+  ret = esp_netif_set_ip_info(wifi_sta, &ip_info);
+  if (ret != ESP_OK) {
+    DEBUG_LOGE(TAG, "esp_netif_set_ip_info failed: %s", esp_err_to_name(ret));
+    return;
+  }
+
+  DEBUG_LOGI(TAG, "Starting Wi-Fi...");
+  ret = esp_wifi_start();
+  if (ret != ESP_OK) {
+    DEBUG_LOGE(TAG, "esp_wifi_start failed: %s", esp_err_to_name(ret));
+    return;
+  }
+  DEBUG_LOGI(TAG, "Wi-Fi STA started with static IP configuration");
 }
 
 void app_main(void) {
@@ -487,5 +563,4 @@ void app_main(void) {
   ESP_ERROR_CHECK(setup_uart());
   xTaskCreate(udp_listener_task, "udp_listener", 8192, NULL, 2, NULL);
   xTaskCreate(send_sbus, "sbus_sender", 2048, NULL, 2, NULL);
-
 }

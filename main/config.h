@@ -36,3 +36,6 @@ uint8_t packet_counter = 0;
 
 uint8_t MY_ID = 1;
 
+#define STATIC_IP_ADDR "10.0.0.101"
+#define STATIC_GATEWAY "10.0.0.1"
+#define STATIC_NETMASK "255.255.255.0"
