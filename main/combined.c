@@ -33,20 +33,18 @@ uint16_t channels[16] = {1500, 1500, 1000, 1500, 1000, 1000, 1500, 1500,
 
 struct routing_header {
   uint8_t destination_host;
-  uint8_t destination_process;
-  uint16_t source_host;
+  uint16_t destination_process;
+  uint8_t source_host;
   uint16_t source_process;
   uint64_t timestamp;
   uint8_t meta;
-  uint8_t next_header;
-}; // 16 bytes
+}; // 15 bytes
 
 struct stream_header {
   uint8_t source_host;
   uint16_t source_process;
   uint32_t encoded_stream_sequence;
-  uint8_t next_header;
-}; // 8 bytes
+}; // 7 bytes
 
 struct payload {
   uint16_t roll;
@@ -58,8 +56,11 @@ struct payload {
 
 struct swmc_packet {
   struct routing_header routing_header;
+  uint8_t header_count;
+  uint8_t header_types[2];
   struct stream_header stream_header;
   struct payload *payload_array; // Array of payloads per agent
+  uint8_t extraneous_byte;       // Extraneous byte
   uint16_t payload_count;        // Number of agents
 };
 
@@ -174,76 +175,72 @@ uint64_t ntohll(uint64_t val) {
 
 struct swmc_packet *decode_packet(const uint32_t stream_id, const char *buffer,
                                   int buffer_len) {
-  if (buffer_len < 24) {
-    DEBUG_LOGE("SWMC", "Obtained buffer must be at least long to hold a "
-                       "routing and stream header");
+  if (buffer_len < 25) {
+    ESP_LOGE("SWMC", "Obtained buffer must be at least long to hold the"
+                     "routing header, header count and types, stream header");
     return NULL;
   }
 
-  if (*((unsigned char *)&buffer[15]) != 0x05) {
-    DEBUG_LOGE("SWMC", "This frame does not have a stream header immediately "
-                       "after the routing header");
+  if (*((uint8_t *)&buffer[16]) != 0x05) {
+    ESP_LOGE("SWMC", "This frame does not have a stream header type");
     return NULL;
   }
 
-  if (*((unsigned char *)&buffer[23]) != 0xFF) {
-    DEBUG_LOGE("SWMC", "This frame does not have the payload immediately after "
-                       "the stream header");
+  if (*((uint8_t *)&buffer[17]) != 0xFF) {
+    ESP_LOGE("SWMC", "This frame does not have a payload header type");
     return NULL;
   }
 
-  struct swmc_packet *packet = malloc(1*sizeof(struct swmc_packet));
+  struct swmc_packet *packet = malloc(1 * sizeof(struct swmc_packet));
 
   // Decode routing header, including endianess correction
   packet->routing_header.destination_host = buffer[0];
-  packet->routing_header.destination_process =
-      ntohs(*(uint16_t *)&buffer[1]);
+  packet->routing_header.destination_process = ntohs(*(uint16_t *)&buffer[1]);
   packet->routing_header.source_host = buffer[3];
   packet->routing_header.source_process = ntohs(*(uint16_t *)&buffer[4]);
   memcpy(&packet->routing_header.timestamp, &buffer[6], sizeof(uint64_t));
-  packet->routing_header.timestamp =
-      ntohll(packet->routing_header.timestamp);
+  packet->routing_header.timestamp = ntohll(packet->routing_header.timestamp);
   packet->routing_header.meta = buffer[14];
-  packet->routing_header.next_header = buffer[15];
+
+  // Decode header count and types
+  packet->header_count = buffer[15];
+  memcpy(&packet->header_types, &buffer[16], sizeof(2 * sizeof(uint8_t)));
 
   // Decode stream header, including endianess correction
-  packet->stream_header.source_host = buffer[16];
-  packet->stream_header.source_process = ntohs(*(uint16_t *)&buffer[17]);
+  packet->stream_header.source_host = buffer[18];
+  packet->stream_header.source_process = ntohs(*(uint16_t *)&buffer[19]);
   packet->stream_header.encoded_stream_sequence =
-      ntohl(*(uint32_t *)&buffer[19]);
-  packet->stream_header.next_header = buffer[23];
+      ntohl(*(uint32_t *)&buffer[21]);
 
-  // Only attempt to decode the payload if the stream id matches
-  if (stream_id != packet->stream_header.encoded_stream_sequence) {
-    DEBUG_LOGI("SWMC", "Stream ID does not match %lu",
-               packet->stream_header.encoded_stream_sequence);
-    free(packet);
-    return NULL;
-  }
+  // TODO: Make sure SWMC sends the correct stream id
+  // // Only attempt to decode the payload if the stream id matches
+  // if (stream_id != packet->stream_header.encoded_stream_sequence) {
+  //   ESP_LOGI("SWMC", "Stream ID does not match %lu",
+  //              packet->stream_header.encoded_stream_sequence);
+  //   free(packet);
+  //   return NULL;
+  // }
 
   // TODO: Fast decode
-  uint16_t payload_count = (buffer_len - 24) / 9;
+  uint16_t payload_count =
+      (buffer_len - 26) / 9; // 25 header + 1 extraneous bytes
   DEBUG_LOGI("SWMC", "Obtained %d payload packets", payload_count);
   packet->payload_count = payload_count;
 
-  packet->payload_array = malloc(payload_count*sizeof(struct payload));
+  packet->payload_array = malloc(payload_count * sizeof(struct payload));
   if (!packet->payload_array) {
     free(packet);
     return NULL;
   }
 
   // Decode all payload, including endianess correction
-  uint16_t buf_pos = 24;
+  uint16_t buf_pos = 25;
   for (uint16_t i = 0; i < payload_count; i++) {
-    packet->payload_array[i].roll =
-        ntohs(*(uint16_t *)&buffer[buf_pos + 0]);
-    packet->payload_array[i].pitch =
-        ntohs(*(uint16_t *)&buffer[buf_pos + 2]);
-    packet->payload_array[i].yaw =
-        ntohs(*(uint16_t *)&buffer[buf_pos + 4]);
-    packet->payload_array[i].thrust =
-        ntohs(*(uint16_t *)&buffer[buf_pos + 6]);
-    packet->payload_array[i].flags = buffer[buf_pos + 8];
+    packet->payload_array[i].flags = buffer[buf_pos + 0];
+    packet->payload_array[i].roll = ntohs(*(uint16_t *)&buffer[buf_pos + 1]);
+    packet->payload_array[i].pitch = ntohs(*(uint16_t *)&buffer[buf_pos + 3]);
+    packet->payload_array[i].yaw = ntohs(*(uint16_t *)&buffer[buf_pos + 5]);
+    packet->payload_array[i].thrust = ntohs(*(uint16_t *)&buffer[buf_pos + 7]);
 
     // Move the buffer position by the size of the payload struct (9 bytes)
     buf_pos += 9;
@@ -387,7 +384,7 @@ void udp_listener_task(void *pvParameters) {
 #endif
 
     if (rx_buffer_len < 0) {
-      DEBUG_LOGE("UDP", "recvfrom failed: errno %d", errno);
+      ESP_LOGE("UDP", "recvfrom failed: errno %d", errno);
       break;
     }
 
@@ -395,26 +392,40 @@ void udp_listener_task(void *pvParameters) {
         decode_packet(SWMC_STREAM_ID, rx_buffer, rx_buffer_len);
 
     if (!packet) {
-      DEBUG_LOGE("UDP", "Failed to decode packet");
+      ESP_LOGE("UDP", "Failed to decode packet");
       return;
     }
 
     if (MY_ID > packet->payload_count - 1) {
-      DEBUG_LOGE("UDP", "MY_ID (%d) is out of bounds. Payload count: %d", MY_ID,
-                 packet->payload_count);
+      ESP_LOGE("UDP", "MY_ID (%d) is out of bounds. Payload count: %d", MY_ID,
+               packet->payload_count);
       return;
     }
 
-    struct payload *my_payload = &((packet->payload_array)[MY_ID]);
+    struct payload *my_payload = &((packet->payload_array)[MY_ID + 1]);
     channels[0] = my_payload->roll;
     channels[1] = my_payload->pitch;
     channels[2] = my_payload->thrust;
     channels[3] = my_payload->yaw;
     decode_flags(my_payload->flags);
 
+#if DEBUG_UDP_ENABLED
+    ESP_LOGI("UDP Testing", "Received ROLL value: %d", channels[0]);
+    ESP_LOGI("UDP Testing", "Received PTCH value: %d", channels[1]);
+    ESP_LOGI("UDP Testing", "Received YAWR value: %d", channels[3]);
+    ESP_LOGI("UDP Testing", "Received THRT value: %d", channels[2]);
+    ESP_LOGI("UDP Testing", "Received AUX1 value: %d", channels[4]);
+    ESP_LOGI("UDP Testing", "Received AUX2 value: %d", channels[5]);
+    ESP_LOGI("UDP Testing", "Received AUX3 value: %d", channels[6]);
+    ESP_LOGI("UDP Testing", "Received AUX4 value: %d", channels[7]);
+    ESP_LOGI("UDP Testing", "Received AUX5 value: %d", channels[8]);
+#endif
+
     // release memory, preferably in reverse order of alloc
-    if(my_payload) free(packet->payload_array);
-    if(packet) free(packet);
+    if (my_payload)
+      free(packet->payload_array);
+    if (packet)
+      free(packet);
   }
 
   if (sock != -1) {

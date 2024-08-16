@@ -10,30 +10,37 @@ ESP_PORT = 10240  # Port number on which your ESP device is listening
 BUFFER_SIZE = 4096  # Buffer size for receiving data
 BROADCAST_IP = '10.0.0.255'  # SWMC Broadcast IP address
 
-num_agents = 30
+num_agents = 25
 packet_rate = 50
 
 
 class PayloadDict(TypedDict):
-    key1: np.uint16
+    key1: np.uint8
     key2: np.uint16
     key3: np.uint16
     key4: np.uint16
-    key5: np.uint8
+    key5: np.uint16
 
 
 def swmc_packet(payload: List[PayloadDict]):
     msg_format = (
-        '>' + 'BBHHQBB' +  # routing header (16 bytes)
-        'BHLB' +  # stream header (8 bytes)
-        ('HHHHB' * len(payload))  # payload array
+        '>' + 'BHBHQB' +  # routing header (15 bytes)
+        'B' + 'BB' +  # header count and types (1+2 bytes)
+        'BHL' +  # stream header (7 bytes)
+        ('BHHHH' * len(payload)) +  # payload array
+        'B'  # extraneous byte
     )
 
-    routing_header = [0, 0, 0, 0, 0, 0, 5]
-    stream_header = [0, 0, 777, 255]
+    routing_header = [0, 0, 0, 0, 0, 0]
+    header_count = [0]
+    header_types = [5, 255]
+    stream_header = [0, 0, 777]
     payload = [value for d in payload for value in d.values()]
+    extraneous_byte = [0]
 
-    return struct.pack(msg_format, *routing_header, *stream_header, *payload)
+    return struct.pack(msg_format, *routing_header, *header_count,
+                       *header_types, *stream_header, *payload,
+                       *extraneous_byte)
 
 
 def send_packet(packet):
@@ -55,22 +62,22 @@ if __name__ == "__main__":
 
     while time.time() - start_time < 10:
         ctrl_command = {
+            'flags': int('00000001', 2),
             'roll': 1500,
             'pitch': 1500,
             'yaw': 1500,
             'thrust': 1000,
-            'flags': int('11100101', 2)
         }
 
         send_ctrl(ctrl_command)
 
-    for _ in range(3):
+    for _ in range(10):
         ctrl_command = {
+            'flags': int('00000000', 2),
             'roll': 1500,
             'pitch': 1500,
             'yaw': 1500,
             'thrust': 1000,
-            'flags': int('00000000', 2)
         }
 
         send_ctrl(ctrl_command)
