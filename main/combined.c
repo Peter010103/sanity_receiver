@@ -478,6 +478,16 @@ void wifi_init_sta(void) {
 
   esp_err_t ret;
 
+  DEBUG_LOGI(TAG, "Erasing PHY calibration data...");
+  ret = esp_phy_erase_cal_data_in_nvs();
+  if (ret != ESP_OK) {
+    ESP_LOGE(TAG, "esp_phy_erase_cal_data_in_nvs failed: %s",
+             esp_err_to_name(ret));
+    return;
+  }
+  DEBUG_LOGI(TAG,
+             "PHY calibration data erased. Full calibration will be performed");
+
   DEBUG_LOGI(TAG, "Initializing ESP-NETIF...");
   ret = esp_netif_init();
   if (ret != ESP_OK) {
