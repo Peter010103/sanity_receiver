@@ -297,6 +297,16 @@ void udp_sender_task(void *pvParameters) {
       vTaskDelete(NULL);
       return;
     }
+
+    // Set the socket to non-blocking mode
+    int flags = fcntl(sock, F_GETFL, 0);
+    if (flags == -1) {
+      DEBUG_LOGE(TAG, "Unable to get socket flags: errno %d", errno);
+    }
+    if (fcntl(sock, F_SETFL, flags | O_NONBLOCK) == -1) {
+      DEBUG_LOGE(TAG, "Unable to set socket to non-blocking: errno %d", errno);
+    }
+
     DEBUG_LOGI(TAG, "Socket created, sending to %s:%d", UDP_CLIENT_TARGET_IP,
                UDP_CLIENT_TARGET_PORT);
 
@@ -326,6 +336,15 @@ void udp_listener_task(void *pvParameters) {
     return;
   }
   DEBUG_LOGI("UDP", "Socket created");
+
+  // Set the socket to non-blocking mode
+  int flags = fcntl(sock, F_GETFL, 0);
+  if (flags == -1) {
+    DEBUG_LOGE("UDP", "Unable to get socket flags: errno %d", errno);
+  }
+  if (fcntl(sock, F_SETFL, flags | O_NONBLOCK) == -1) {
+    DEBUG_LOGE("UDP", "Unable to set socket to non-blocking: errno %d", errno);
+  }
 
   server_addr.sin_family = AF_INET;
   server_addr.sin_port = htons(UDP_PORT);
