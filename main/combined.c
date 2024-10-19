@@ -5,6 +5,7 @@
 #include "driver/uart.h"
 #include "esp_event.h"
 #include "esp_netif.h"
+#include "esp_phy_init.h"
 #include "nvs_flash.h"
 
 #include "esp_netif.h"
@@ -95,7 +96,7 @@ esp_err_t setup_uart(void) {
   }
 
 #if SBUS_INVERT
-  err = uart_set_line_inverse(UART_NUM, UART_INVERSE_TXD | UART_INVERSE_RXD);
+  err = uart_set_line_inverse(UART_NUM, UART_SIGNAL_TXD_INV | UART_SIGNAL_RXD_INV);
   if (err != ESP_OK) {
     DEBUG_LOGE("UART", "uart_set_line_inverse failed");
     return err;

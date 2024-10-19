@@ -6,7 +6,7 @@
 #define SBUS_PACKET_SIZE 25
 #define SBUS_RATE 100
 #define SBUS_DELAY_MS (1000 / SBUS_RATE)
-#define SBUS_INVERT (0)
+#define SBUS_INVERT (1)
 
 #define CHANNEL_MIN 1000
 #define CHANNEL_MAX 2000
