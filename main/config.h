@@ -8,6 +8,8 @@
 #define SBUS_DELAY_MS (1000 / SBUS_RATE)
 #define SBUS_INVERT (1)
 
+#define CTRL_DISARM_TIMEOUT_MS 1000
+
 #define CHANNEL_MIN 1000
 #define CHANNEL_MAX 2000
 #define UART_MIN 192

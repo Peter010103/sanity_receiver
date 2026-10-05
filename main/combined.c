@@ -16,6 +16,7 @@
 #include "sys/time.h"
 
 #include "config.h"
+#include "wdg_timer.h"
 
 // Initialize channel values
 uint16_t channels[16] = {1500, 1500, 1000, 1500, 1000, 1000, 1500, 1500,
@@ -66,6 +67,9 @@ struct swmc_packet {
 };
 
 static char rx_buffer[UDP_BUF_SIZE];
+static struct wdg_timer ctrl_update_wdg = {.is_expired_ = false,
+                                           .can_override_expiry_ = true,
+                                           .timeout_ms_ = CTRL_DISARM_TIMEOUT_MS};
 
 esp_err_t setup_uart(void) {
   const uart_config_t uart_config = {.baud_rate = 100000,
@@ -157,6 +161,10 @@ void send_sbus(void *pvParameters) {
   uint8_t sbus_packet[SBUS_PACKET_SIZE] = {0};
 
   while (1) {
+    if( wdg_expired(&ctrl_update_wdg)){  // we have a wdg timeout
+      channels[4] = 1000;                // disarm on aux1
+      channels[5] = 1000;                // also reset aux2
+    }
     construct_sbus(channels, sbus_packet);
     uart_write_bytes(UART_NUM, (const char *)sbus_packet, SBUS_PACKET_SIZE);
     vTaskDelay(pdMS_TO_TICKS(SBUS_DELAY_MS));
@@ -356,6 +364,9 @@ void udp_listener_task(void *pvParameters) {
   DEBUG_LOGI("UDP Testing", "%lu", portTICK_PERIOD_MS);
 #endif
 
+  // init & reset watchdog whenever we're here (maybe redundant with global vars)
+  wdg_init(&ctrl_update_wdg, CTRL_DISARM_TIMEOUT_MS);
+
   while (1) {
     struct sockaddr_in source_addr;
     socklen_t socklen = sizeof(source_addr);
@@ -409,6 +420,8 @@ void udp_listener_task(void *pvParameters) {
     channels[2] = my_payload->thrust;
     channels[3] = my_payload->yaw;
     decode_flags(my_payload->flags);
+    // reset, and allow override if thrust is min (i.e., we're (re-)arming)
+    wdg_reset(&ctrl_update_wdg, (my_payload->thrust == CHANNEL_MIN) );
 
 #if DEBUG_UDP_ENABLED
     ESP_LOGI("UDP Testing", "Received ROLL value: %d", channels[0]);
